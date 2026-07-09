@@ -1,5 +1,10 @@
 # agent-control-plane
 
+[![CI](https://github.com/mkadri85/agent-control-plane/actions/workflows/ci.yml/badge.svg)](https://github.com/mkadri85/agent-control-plane/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+![TypeScript](https://img.shields.io/badge/TypeScript-strict-3178c6.svg)
+![runtime dependencies](https://img.shields.io/badge/runtime%20deps-0-brightgreen.svg)
+
 A minimal, framework-agnostic **control plane for AI agent fleets**: a signal plane, a confidence gate, and a kill switch. Zero runtime dependencies.
 
 AI agents have started causing the production incidents they were built to resolve. In April 2026 a coding agent deleted a company's production database and its backups in about nine seconds. The pattern is not rare, and it has the same shape every time: an agent takes a real action on an incomplete view of the world, and nothing stands between its intent and the damage.
@@ -40,6 +45,43 @@ npm run demo
 ```
 
 The demo runs a small fleet through the plane: a healthy agent proceeds, a looping agent is auto-rerouted, a cost runaway is auto-paused, a quietly drifting agent is escalated to a human with its full replay, and then the kill switch stops the whole fleet.
+
+```text
+  agent-control-plane  live demo
+
+  agent-01 healthy: three clean tool calls
+    allowed  call 1
+    allowed  call 2
+    allowed  call 3
+
+  agent-04 starts looping on a failing tool
+    allowed  retry 1
+    allowed  retry 2
+    allowed  retry 3
+    -> reroute agent-04: known loop, switch model
+    allowed  retry 4  [auto_remediate: confidence 0.90 >= 0.8 and reroute is auto-allowed]
+
+  agent-09 output quality quietly drifting
+    allowed  response 1
+    allowed  response 2
+    allowed  response 3
+    -> pause agent-09: containing before human review
+    ESCALATE agent-09 -> human
+    why: output quality drifting (2/4 weak responses) (confidence 0.50)
+    handing over the last 4 of 4 recorded decisions:
+      model_response   ok   300 tok
+      model_response   ERR  300 tok
+      model_response   ok   300 tok
+      model_response   ERR  300 tok
+    stopped  response 4  [escalate: confidence 0.50 < 0.8]
+
+  agent-07 burning tokens far past its budget
+    -> pause agent-07: token spend 12000 over budget 5000
+    stopped  one very expensive step  [auto_remediate: confidence 0.95 >= 0.8 and pause is auto-allowed]
+
+  kill switch tripped for the whole fleet
+    stopped  agent-01 tries another call  [blocked: kill switch tripped]
+```
 
 ## Use it
 

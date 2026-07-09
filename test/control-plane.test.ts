@@ -3,6 +3,8 @@ import {
   controlPlane,
   confidenceGate,
   loopDetector,
+  costRunawayDetector,
+  errorRateDetector,
   driftDetector,
   SignalPlane,
   type Actions,
@@ -52,6 +54,53 @@ describe("loopDetector", () => {
 
   it("does not fire when the tool varies", () => {
     expect(detect([call("x"), call("y"), call("x")])).toBeNull();
+  });
+});
+
+describe("costRunawayDetector", () => {
+  const detect = costRunawayDetector({ maxTokens: 1000 });
+  const step = (tokens: number) => ({ agentId: "a", ts: 0, type: "model_response" as const, ok: true, tokens });
+
+  it("stays quiet under budget", () => {
+    expect(detect([step(400), step(400)])).toBeNull();
+  });
+
+  it("fires, and confidence rises with the overshoot", () => {
+    const mild = detect([step(1500)]);
+    const bad = detect([step(3000)]);
+    expect(mild?.status).toBe("degraded");
+    expect(bad?.status).toBe("failing");
+    expect(bad!.confidence).toBeGreaterThan(mild!.confidence);
+  });
+});
+
+describe("errorRateDetector", () => {
+  const detect = errorRateDetector({ threshold: 0.5, min: 4 });
+  const step = (ok: boolean) => ({ agentId: "a", ts: 0, type: "tool_call" as const, ok });
+
+  it("waits for a minimum sample before firing", () => {
+    expect(detect([step(false), step(false)])).toBeNull();
+  });
+
+  it("fires once the failure rate crosses the threshold", () => {
+    const f = detect([step(false), step(false), step(false), step(true)]);
+    expect(f?.reason).toContain("error rate");
+  });
+});
+
+describe("driftDetector", () => {
+  const detect = driftDetector({ min: 3, qualityFloor: 0.5 });
+  const resp = (ok: boolean) => ({ agentId: "a", ts: 0, type: "model_response" as const, ok });
+
+  it("reports modest confidence so the gate escalates", () => {
+    const f = detect([resp(false), resp(true), resp(false)]);
+    expect(f?.status).toBe("degraded");
+    expect(f!.confidence).toBeLessThan(0.8);
+  });
+
+  it("only looks at model responses, not tool calls", () => {
+    const call = { agentId: "a", ts: 0, type: "tool_call" as const, ok: false };
+    expect(detect([call, call, call])).toBeNull();
   });
 });
 
