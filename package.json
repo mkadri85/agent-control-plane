@@ -34,6 +34,7 @@
   ],
   "scripts": {
     "build": "tsc",
+    "prepublishOnly": "npm run build",
     "demo": "tsx examples/demo.ts",
     "test": "vitest run",
     "typecheck": "tsc --noEmit"
