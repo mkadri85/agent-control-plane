@@ -1,6 +1,6 @@
-# agent-control-plane
+# guardplane
 
-[![CI](https://github.com/mkadri85/agent-control-plane/actions/workflows/ci.yml/badge.svg)](https://github.com/mkadri85/agent-control-plane/actions/workflows/ci.yml)
+[![CI](https://github.com/mkadri85/guardplane/actions/workflows/ci.yml/badge.svg)](https://github.com/mkadri85/guardplane/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 ![TypeScript](https://img.shields.io/badge/TypeScript-strict-3178c6.svg)
 ![runtime dependencies](https://img.shields.io/badge/runtime%20deps-0-brightgreen.svg)
@@ -38,8 +38,8 @@ Take the incident loop that keeps infrastructure alive and point it at the agent
 ## Try it
 
 ```bash
-git clone https://github.com/mkadri85/agent-control-plane
-cd agent-control-plane
+git clone https://github.com/mkadri85/guardplane
+cd guardplane
 npm install
 npm run demo
 ```
@@ -47,7 +47,7 @@ npm run demo
 The demo runs a small fleet through the plane: a healthy agent proceeds, a looping agent is auto-rerouted, a cost runaway is auto-paused, a quietly drifting agent is escalated to a human with its full replay, and then the kill switch stops the whole fleet.
 
 ```text
-  agent-control-plane  live demo
+  guardplane  live demo
 
   agent-01 healthy: three clean tool calls
     allowed  call 1
@@ -93,7 +93,7 @@ import {
   errorRateDetector,
   driftDetector,
   type Actions,
-} from "agent-control-plane";
+} from "guardplane";
 
 // You implement these against your own runtime.
 const actions: Actions = {
