@@ -23,6 +23,9 @@ export type { GatePolicy } from "./confidence-gate.js";
 
 export { loopDetector, costRunawayDetector, errorRateDetector, driftDetector } from "./detector.js";
 
+export { BurnRateMonitor, burnRateDetector } from "./burn-rate.js";
+export type { AgentMode, BurnRateOptions, BurnSnapshot } from "./burn-rate.js";
+
 export type { Actions } from "./actions.js";
 
 export { ControlPlane } from "./control-plane.js";
@@ -32,6 +35,7 @@ export type {
   Observation,
   ObservableEvent,
   EscalationContext,
+  FleetView,
 } from "./control-plane.js";
 
 import { ControlPlane, type ControlPlaneConfig } from "./control-plane.js";

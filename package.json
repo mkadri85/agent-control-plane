@@ -1,6 +1,6 @@
 {
   "name": "guardplane",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "A minimal, framework-agnostic control plane for AI agent fleets: signal plane, confidence gate, and kill switch.",
   "type": "module",
   "license": "MIT",
@@ -43,5 +43,9 @@
     "tsx": "^4.19.2",
     "typescript": "^5.7.2",
     "vitest": "^2.1.8"
+  },
+  "sideEffects": false,
+  "engines": {
+    "node": ">=18"
   }
 }

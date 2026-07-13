@@ -11,6 +11,7 @@ import { SignalPlane, type SignalSink } from "./signal-plane.js";
 import { KillSwitch } from "./kill-switch.js";
 import { confidenceGate, type GatePolicy } from "./confidence-gate.js";
 import type { Actions } from "./actions.js";
+import { BurnRateMonitor, type AgentMode, type BurnRateOptions, type BurnSnapshot } from "./burn-rate.js";
 
 /** Everything the control plane hands a human when it decides to escalate. */
 export interface EscalationContext {
@@ -37,12 +38,31 @@ export interface ControlPlaneConfig {
   now?: () => number;
   /** Map a diagnosis to a proposed remediation. Default: pause. */
   planRemediation?: (health: Health, agentId: AgentId) => Remediation;
+  /**
+   * Enable the baseline-relative burn-rate breaker: alarm on the derivative,
+   * not the level. Pass options, or a prebuilt monitor to share/inspect it.
+   */
+  burnRate?: BurnRateOptions | BurnRateMonitor;
+  /** Called when the breaker latches an agent into propose-only. */
+  onDemote?: (ctx: { agentId: AgentId; snapshot: BurnSnapshot; replay: AgentEvent[] }) => void;
 }
 
 /** What `observe` tells the caller: may the agent proceed, and why. */
 export interface Observation {
   allowed: boolean;
   decision: Decision;
+  /**
+   * "propose_only" while the burn-rate breaker has this agent demoted: the
+   * agent may keep producing, but its outputs are proposals for a human, not
+   * actions. "active" otherwise (and always, when burnRate is not configured).
+   */
+  mode: AgentMode;
+}
+
+/** Fleet-level health view: burn snapshots plus kill-switch state per agent. */
+export interface FleetView {
+  agents: Array<BurnSnapshot & { killed: boolean }>;
+  generatedAt: number;
 }
 
 /** A per-agent handle onto the control plane. */
@@ -62,6 +82,8 @@ export type ObservableEvent = Omit<AgentEvent, "agentId" | "ts"> & { ts?: number
 export class ControlPlane {
   readonly signals: SignalPlane;
   readonly killSwitch: KillSwitch;
+  /** The burn-rate breaker, exposed like killSwitch. Undefined unless configured. */
+  readonly burnRate?: BurnRateMonitor;
   private readonly gate: ReturnType<typeof confidenceGate>;
   private readonly now: () => number;
 
@@ -70,6 +92,45 @@ export class ControlPlane {
     this.killSwitch = new KillSwitch();
     this.gate = confidenceGate(cfg.gate);
     this.now = cfg.now ?? (() => Date.now());
+    if (cfg.burnRate) {
+      this.burnRate = cfg.burnRate instanceof BurnRateMonitor
+        ? cfg.burnRate
+        : new BurnRateMonitor(cfg.burnRate);
+      if (cfg.onDemote) {
+        this.burnRate.onDemote((snapshot) => {
+          cfg.onDemote?.({ agentId: snapshot.agentId, snapshot, replay: this.signals.replay(snapshot.agentId) });
+        });
+      }
+    }
+  }
+
+  /** Fleet-level health view across every agent the plane has seen. */
+  fleet(): FleetView {
+    const now = this.now();
+    const killed = (id: AgentId) => this.killSwitch.isTripped(id);
+    if (this.burnRate) {
+      const seen = new Set<AgentId>();
+      const agents = this.burnRate.fleet(now).map((s) => {
+        seen.add(s.agentId);
+        return { ...s, killed: killed(s.agentId) };
+      });
+      for (const e of this.signals.all()) {
+        if (!seen.has(e.agentId)) {
+          seen.add(e.agentId);
+          agents.push({ ...this.burnRate.snapshot(e.agentId, now), killed: killed(e.agentId) });
+        }
+      }
+      return { agents, generatedAt: now };
+    }
+    const ids = [...new Set(this.signals.all().map((e) => e.agentId))];
+    return {
+      agents: ids.map((agentId) => ({
+        agentId, baseline: 0, current: null, burnRate: null,
+        samples: { baseline: 0, current: 0 }, mode: "active" as AgentMode,
+        killed: killed(agentId),
+      })),
+      generatedAt: now,
+    };
   }
 
   /** Get a handle for one agent in the fleet. */
@@ -80,7 +141,11 @@ export class ControlPlane {
   private observe(agentId: AgentId, raw: ObservableEvent): Observation {
     // 1. Kill switch: a hard stop that beats everything else.
     if (this.killSwitch.isTripped(agentId)) {
-      return { allowed: false, decision: { action: "blocked", reason: "kill switch tripped" } };
+      return {
+        allowed: false,
+        decision: { action: "blocked", reason: "kill switch tripped" },
+        mode: this.burnRate?.mode(agentId) ?? "active",
+      };
     }
 
     // 2. Signal plane: record the decision as one replayable event.
@@ -94,13 +159,27 @@ export class ControlPlane {
       detail: raw.detail,
     };
     this.signals.record(event);
+    this.burnRate?.record(event);
+
+    // 2b. Burn-rate breaker: while demoted, everything is a proposal.
+    if (this.burnRate && this.burnRate.mode(agentId) === "propose_only") {
+      const snap = this.burnRate.snapshot(agentId, event.ts);
+      return {
+        allowed: true,
+        mode: "propose_only",
+        decision: {
+          action: "escalate",
+          reason: snap.reason ?? "burn-rate breaker latched: propose-only until reset or cooldown",
+        },
+      };
+    }
 
     // 3. Reasoning layer: is this agent actually broken?
     const windowMs = this.cfg.windowMs ?? 60_000;
     const window = this.signals.recent(agentId, windowMs, this.now());
     const health = this.diagnose(window);
     if (health.status === "healthy") {
-      return { allowed: true, decision: { action: "allow", reason: "healthy" } };
+      return { allowed: true, decision: { action: "allow", reason: "healthy" }, mode: "active" };
     }
 
     // 4. Confidence gate: act or escalate.
@@ -111,15 +190,15 @@ export class ControlPlane {
     if (decision.action === "auto_remediate" && decision.remediation) {
       void this.apply(agentId, decision.remediation);
       // a reroute lets the agent keep working; a pause/rollback stops this step
-      return { allowed: decision.remediation.kind === "reroute", decision };
+      return { allowed: decision.remediation.kind === "reroute", decision, mode: "active" };
     }
     if (decision.action === "escalate") {
       // contain first, then hand the full replay to a human
       void this.cfg.actions.pause(agentId, "containing before human review");
       this.cfg.onEscalate({ agentId, health, decision, replay: this.signals.replay(agentId) });
-      return { allowed: false, decision };
+      return { allowed: false, decision, mode: "active" };
     }
-    return { allowed: true, decision };
+    return { allowed: true, decision, mode: "active" };
   }
 
   private diagnose(events: AgentEvent[]): Health {

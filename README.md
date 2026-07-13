@@ -7,7 +7,7 @@
 
 A minimal, framework-agnostic **control plane for AI agent fleets**: a signal plane, a confidence gate, and a kill switch. Zero runtime dependencies.
 
-AI agents have started causing the production incidents they were built to resolve. In April 2026 a coding agent deleted a company's production database and its backups in about nine seconds. The pattern is not rare, and it has the same shape every time: an agent takes a real action on an incomplete view of the world, and nothing stands between its intent and the damage.
+AI agents have started causing the production incidents they were built to resolve. In April 2026 a coding agent [deleted a company's production database and its backups](https://www.theregister.com/2026/04/27/cursoropus_agent_snuffs_out_pocketos/) in about nine seconds. The pattern is not rare, and it has the same shape every time: an agent takes a real action on an incomplete view of the world, and nothing stands between its intent and the damage.
 
 This is a small reference implementation of the thing that stands in between. It is the companion to the write-up [**Who Operates the Operators?**](https://mkadri85.github.io/blog/agentic-sre-agent-fleets/).
 
@@ -147,6 +147,49 @@ The gate is the only interesting decision in the system, so it is worth stating 
 | Healthy | none | **allow** |
 
 The default threshold is `0.8` and the default auto-allowed actions are `reroute` and `pause`. Both are configurable per plane.
+
+## The burn-rate breaker (new in 0.2)
+
+Per-action gates catch the bad call in front of you. They do not catch an
+agent whose judgment is slowly degrading. The `BurnRateMonitor` alarms on the
+derivative, not the level: each agent is compared to its OWN trailing
+baseline, and when its current failure rate burns past that baseline (default
+2x), the agent is latched into `propose_only` - it may keep producing, but its
+outputs are proposals for a human, not actions.
+
+```ts
+import { controlPlane } from "guardplane";
+
+const plane = controlPlane({
+  detectors: [],
+  actions,
+  onEscalate: (ctx) => notifyHuman(ctx),
+  burnRate: { tripRatio: 2, cooldownMs: 10 * 60_000 },
+  onDemote: ({ agentId, snapshot }) =>
+    page(`agent ${agentId} demoted: ${snapshot.reason}`),
+});
+
+const obs = plane.wrap("billing-agent").observe({ type: "tool_call", ok: false });
+obs.mode; // "active" | "propose_only"
+plane.fleet(); // one BurnSnapshot per agent + kill-switch state
+```
+
+Three guards keep a degrading agent from teaching the baseline that failure
+is normal:
+
+- **learning freeze** - while burn rate is elevated, the baseline stops
+  absorbing events, so an active incident cannot poison it
+- **asymmetric learning** - the baseline learns improvement fast and
+  degradation slowly
+- **absolute ceiling** - a level backstop (default 60% failure rate) that
+  catches the slow boil the ratio can never see, including during cold start
+
+The design follows the multi-window burn-rate alerting practice from the
+[Google SRE Workbook, ch. 5](https://sre.google/workbook/alerting-on-slos/),
+pointed at agents instead of services. `BurnRateMonitor` is the kill switch's
+softer sibling: `demote(agentId)` / `reset(agentId)` mirror `trip` / `reset`,
+and `burnRateDetector(monitor)` adapts the latch into a standard `Detector`
+for custom stacks.
 
 ## What this is, and is not
 
